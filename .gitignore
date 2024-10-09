@@ -3,3 +3,8 @@ figures/scripts/.OLD
 scripts/.*
 output/*
 output_figures/*
+scripts/01_PreProcessing/slurm_logs/*
+scripts/01_PreProcessing/.snakemake*
+scripts/01_PreProcessing/cfspi/*
+scripts/01_PreProcessing/config/*
+scripts/02_mapAspergillus/resources/*

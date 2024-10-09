@@ -1,0 +1,373 @@
+# Main pipeline
+# Specify snakemake version
+from snakemake.utils import min_version
+from os.path import join as opj
+min_version("6.3.0")
+
+#configfile: "config/config.yaml"
+
+# This defines the sample name should never contain underscore to avoid confusing rule determination.
+wildcard_constraints:
+    sample_name='[^_\W]+'
+
+report: "report/workflow.rst"
+
+### load rules ###
+include: "rules/common.smk"
+include: "rules/trim.smk"
+include: "rules/ref.smk"
+
+print("Unit file path:", config["units"])
+
+###
+OUTDIR=config["outdir"]+"/"+config['run_name']
+
+## sort memory and disk  requirement 
+def get_mem_mb(wildcards, attempt):
+    return attempt * 16000
+
+def get_disk_mb(wildcards, attempt):
+    return attempt * 150000
+
+def get_time(wildcards, attempt):
+    return attempt  * 60 + 60
+
+def get_time_180_60(wildcards, attempt):
+    return attempt * 60 + 180
+
+def get_time_30_120(wildcards, attempt):
+    return attempt * 120 + 30
+# rules that doesn't require much computational time and power are defied as local rules
+# all the output files should be defined at rule all
+rule all:
+    input:
+        # git version
+        expand("{OUTDIR}git-version.log", OUTDIR=OUTDIR),
+
+        #example
+        expand("{OUTDIR}results/host_TLEN_readCount/{sample_name}_MT_readCount.txt", sample_name=units['sample_name'], OUTDIR=OUTDIR),
+        expand("{OUTDIR}results/host_TLEN_readCount/{sample_name}_nonMT_readCount.txt", sample_name=units['sample_name'], OUTDIR=OUTDIR),
+
+        expand("{OUTDIR}results/host_TLEN_readCount/{sample_name}_R1_MT_TLEN_EndMotif.txt", sample_name=units['sample_name'], OUTDIR=OUTDIR),
+        expand("{OUTDIR}results/host_TLEN_readCount/{sample_name}_R1neg_MT_TLEN_EndMotif.txt", sample_name=units['sample_name'], OUTDIR=OUTDIR),
+        expand("{OUTDIR}results/host_TLEN_readCount/{sample_name}_R1pos_MT_TLEN_EndMotif.txt", sample_name=units['sample_name'], OUTDIR=OUTDIR),
+
+        expand("{OUTDIR}results/host_TLEN_readCount/{sample_name}_R1_nonMT_TLEN_EndMotif.txt", sample_name=units['sample_name'], OUTDIR=OUTDIR),
+        expand("{OUTDIR}results/host_TLEN_readCount/{sample_name}_R1neg_nonMT_TLEN_EndMotif.txt", sample_name=units['sample_name'], OUTDIR=OUTDIR),
+        expand("{OUTDIR}results/host_TLEN_readCount/{sample_name}_R1pos_nonMT_TLEN_EndMotif.txt", sample_name=units['sample_name'], OUTDIR=OUTDIR),
+
+        expand("{OUTDIR}results/host_TLEN_readCount/{sample_name}_R2_MT_TLEN_EndMotif.txt", sample_name=units['sample_name'], OUTDIR=OUTDIR),
+        expand("{OUTDIR}results/host_TLEN_readCount/{sample_name}_R2neg_MT_TLEN_EndMotif.txt", sample_name=units['sample_name'], OUTDIR=OUTDIR),
+        expand("{OUTDIR}results/host_TLEN_readCount/{sample_name}_R2pos_MT_TLEN_EndMotif.txt", sample_name=units['sample_name'], OUTDIR=OUTDIR),
+
+        expand("{OUTDIR}results/host_TLEN_readCount/{sample_name}_R2_nonMT_TLEN_EndMotif.txt", sample_name=units['sample_name'], OUTDIR=OUTDIR),
+        expand("{OUTDIR}results/host_TLEN_readCount/{sample_name}_R2neg_nonMT_TLEN_EndMotif.txt", sample_name=units['sample_name'], OUTDIR=OUTDIR),
+        expand("{OUTDIR}results/host_TLEN_readCount/{sample_name}_R2pos_nonMT_TLEN_EndMotif.txt", sample_name=units['sample_name'], OUTDIR=OUTDIR),
+
+localrules: all, get_version_control
+rule get_version_control:
+    output:
+        opj(OUTDIR, "git-version.log")
+    shell:
+        "echo git branch: > {output};"
+        "git branch >> {output};"
+        "echo ================================ >> {output};"
+        "echo git log: >> {output};"
+        "git log -1  >> {output};"
+        "echo ================================ >> {output};"
+        "echo git status: >> {output};"
+        "git status >> {output};"
+        "echo ================================ >> {output};"
+        "echo git diff: >> {output};"
+        "git diff  >> {output};"
+
+rule a_concat_fastq:
+    input:
+        get_fq
+    output:
+        R1_raw=temp(opj(OUTDIR, 'results/tmp/{sample_name}_R1.fastq')),
+        R2_raw=temp(opj(OUTDIR, 'results/tmp/{sample_name}_R2.fastq')),
+
+        stats_R1=opj(OUTDIR,'results/stats/{sample_name}_R1_01_raw_fastq.txt'),
+        stats_R2=opj(OUTDIR,'results/stats/{sample_name}_R2_01_raw_fastq.txt'),
+
+        R1_raw_gz=opj(opj(OUTDIR, 'results/raw_fastq/{sample_name}_R1.fastq.gz')),
+        R2_raw_gz=opj(opj(OUTDIR,'results/raw_fastq/{sample_name}_R2.fastq.gz')),
+
+        done=touch(opj(OUTDIR,"done/a_concat_fastq/{sample_name}.done")),
+    benchmark:
+        opj(OUTDIR,"benchmark/a_concat_fastq/{sample_name}.tsv"),
+    group:
+        "QC"
+    resources:
+        mem_mb = 10000,
+        runtime_min = get_time,
+        cpus = 1, 
+        disk_mb = 12000, 
+    threads: 1
+    shell:
+        """
+        mkdir -p {OUTDIR}
+        zcat {input}/*R1*.fastq.gz > '{output.R1_raw}';
+        zcat {input}/*R2*.fastq.gz > '{output.R2_raw}';
+        echo $(cat {output.R1_raw} | wc -l )/4 | bc > '{output.stats_R1}';
+        echo $(cat {output.R2_raw} | wc -l )/4 | bc > '{output.stats_R2}';
+        gzip -c {output.R1_raw} > {output.R1_raw_gz};
+        gzip -c {output.R2_raw} > {output.R2_raw_gz};
+        """
+
+rule b_unique_nubeam:
+    input:
+        R1_raw=rules.a_concat_fastq.output.R1_raw,
+        R2_raw=rules.a_concat_fastq.output.R2_raw,
+    output:
+        R1_nubeam=temp(opj(OUTDIR, 'results/tmp/{sample_name}_R1_uniq.fastq')),   
+        R2_nubeam=temp(opj(OUTDIR, 'results/tmp/{sample_name}_R2_uniq.fastq')),
+
+        stats_R1=opj(OUTDIR,'results/stats/{sample_name}_R1_02_uniq_fastq.txt'),
+        stats_R2=opj(OUTDIR,'results/stats/{sample_name}_R2_02_uniq_fastq.txt'),
+
+        done=touch(opj(OUTDIR,"done/b_unique_nubeam/{sample_name}.done")),
+    priority: 46
+    benchmark:
+        opj(OUTDIR,"benchmark/b_unique_nubeam/{sample_name}.tsv"),
+    group:
+        "QC"
+    resources:
+        mem_mb = get_mem_mb,
+        runtime_min = 21600,
+        cpus = 1,
+        disk_mb = 12000, 
+    log:
+        log=opj(OUTDIR,"log/b_unique_nubeam/{sample_name}.log"),
+    shell:
+        """
+        ./resources/nubeam-dedup -i1 {input.R1_raw} -i2 {input.R2_raw} -o1 {output.R1_nubeam} -o2 {output.R2_nubeam} -s 1 -r 0 2>&1 > {log.log};
+        
+        echo $(cat {output.R1_nubeam}| wc -l )/4 | bc > '{output.stats_R1}';
+        echo $(cat {output.R2_nubeam}| wc -l )/4 | bc > '{output.stats_R2}';
+        """
+
+rule c_fastp:
+    input:
+        R1_nubeam=rules.b_unique_nubeam.output.R1_nubeam,
+        R2_nubeam=rules.b_unique_nubeam.output.R2_nubeam,
+    output:
+        R1_trimmed=temp(opj(OUTDIR,"results/tmp/{sample_name}_R1_trimmed.fastq")),
+        R2_trimmed=temp(opj(OUTDIR,"results/tmp/{sample_name}_R2_trimmed.fastq")),
+
+        stats_R1=opj(OUTDIR,'results/stats/{sample_name}_R1_03_fastp_fastq.txt'),
+        stats_R2=opj(OUTDIR,'results/stats/{sample_name}_R2_03_fastp_fastq.txt'),
+        
+        html=opj(OUTDIR,"reports/fastp/{sample_name}_fastp.html"),
+        json=opj(OUTDIR,"reports/fastp/{sample_name}_fastp.json"),
+        failed=temp(opj(OUTDIR,"results/tmp/fastp_{sample_name}.fastq")),
+
+        done=touch(opj(OUTDIR,"done/c_fastp/{sample_name}.done")),
+    group:
+        "QC"
+    priority: 47
+    resources:
+        mem_mb = 10000,
+        runtime_min = get_time_30_120,
+        cpus = 16, 
+        disk_mb = 12000, 
+    log:
+        log=opj(OUTDIR,"log/c_fastp/{sample_name}.log"),
+    threads: 16
+    benchmark:
+        opj(OUTDIR,"benchmark/c_fastp/{sample_name}.tsv"),
+    conda:
+        "envs/fastp.yaml"
+    shell:
+        """
+        fastp --thread {threads} --in1 {input.R1_nubeam} --in2 {input.R2_nubeam} --out1 {output.R1_trimmed} --out2 {output.R2_trimmed} \
+        --failed_out {output.failed} -h {output.html} -j {output.json} 2>&1 > {log.log};
+
+        echo $(cat {output.R1_trimmed} | wc -l )/4 | bc  > '{output.stats_R1}';
+        echo $(cat {output.R2_trimmed} | wc -l )/4 | bc  > '{output.stats_R2}';
+        """
+
+rule d_adapter_removal:
+    input:
+        R1_trimmed=rules.c_fastp.output.R1_trimmed,
+        R2_trimmed=rules.c_fastp.output.R2_trimmed,
+    output:
+        singleton=temp(opj(OUTDIR,"results/tmp/{sample_name}_singleton_trimmed_truncated")),
+        R1_truncated=temp(opj(OUTDIR,'results/clean_fastq/{sample_name}_R1_trimmed_truncated.fastq')),
+        R2_truncated=temp(opj(OUTDIR,'results/clean_fastq/{sample_name}_R2_trimmed_truncated.fastq')),
+
+        stats_R1=opj(OUTDIR,'results/stats/{sample_name}_R1_04_adapt_remov_fastq.txt'),
+        stats_R2=opj(OUTDIR,'results/stats/{sample_name}_R2_04_adapt_remov_fastq.txt'),
+        settings=opj(OUTDIR,"reports/adapter_removal/{sample_name}_adapter_removal_settings.txt"),
+        discarded=temp(opj(OUTDIR,"results/tmp/{sample_name}_trimmed_discarded.fastq")),
+        done=touch(opj(OUTDIR,"done/d_adapter_removal/{sample_name}.done")),
+    group:
+        "QC"
+    priority: 48
+    log:
+        log=opj(OUTDIR,"log/d_adapter_removal/{sample_name}.log"),
+    params:
+        mq = config['adapter_removal']['minquality'],
+        tmns = config['adapter_removal']['trimns'],
+        ml = config['k_mer_length'],
+        adapter_R1 = get_adapter_R1,
+        adapter_R2 = get_adapter_R2,
+        base_name = "{sample_name}"
+    resources:
+        mem_mb = get_mem_mb,
+        runtime_min = 4800,
+        cpus = 16,
+        disk_mb = get_disk_mb, 
+    threads: 16
+    conda:
+        "envs/adapter_removal.yaml"
+    benchmark:
+        opj(OUTDIR,"benchmark/d_adapter_removal/{sample_name}.tsv"),
+    shell:
+        """
+        AdapterRemoval --threads {threads} --file1 {input.R1_trimmed} --file2 {input.R2_trimmed} --basename {params.base_name} --minlength {params.ml} --trimqualities --minquality {params.mq} {params.tmns} --adapter1 {params.adapter_R1} --adapter2 {params.adapter_R2} \
+        --output1 {output.R1_truncated} --output2 {output.R2_truncated} --singleton {output.singleton} --discarded {output.discarded} --settings {output.settings} 2>&1 > {log.log};
+
+        echo $(cat {output.R1_truncated} | wc -l )/4 | bc > {output.stats_R1};
+        echo $(cat {output.R2_truncated} | wc -l )/4 | bc > {output.stats_R2};
+        """
+
+rule e_chm13_mapping:
+    input:
+        R1_truncated=rules.d_adapter_removal.output.R1_truncated,
+        R2_truncated=rules.d_adapter_removal.output.R2_truncated,   
+    output:
+        host_sam=temp(opj(OUTDIR, 'results/tmp/{sample_name}_alligned_chm13_pe.sam')),
+        host_bam=temp(opj(OUTDIR, 'results/tmp/{sample_name}_alligned_chm13_pe.bam')),
+
+        host_unmpd_r1=temp(opj(OUTDIR,'results/chm13_mapping/{sample_name}_unmapped_chm13_r1.fq')),
+        host_unmpd_r2=temp(opj(OUTDIR,'results/chm13_mapping/{sample_name}_unmapped_chm13_r2.fq')),
+
+        stats_R1=opj(OUTDIR,'results/stats/{sample_name}_R1_XX_chm13_mapp_fastq.txt'),
+        stats_R2=opj(OUTDIR,'results/stats/{sample_name}_R2_XX_chm13_mapp_fastq.txt'),
+    priority: 200
+    threads: 32
+    benchmark:
+        opj(OUTDIR,"benchmark/ff_chm13_mapping/{sample_name}.tsv"),
+    conda:
+        "envs/mapping.yaml"
+    resources:
+        mem_mb = 10000,
+        runtime_min = 2400,
+        cpus = 32,
+        disk_mb = 10000,
+    shell:
+        """
+        bowtie2 -p {threads} -x ./resources/mapping/host/chm13v2.0 -1 {input.R1_truncated} -2 {input.R2_truncated} > {output.host_sam};
+        samtools view -b {output.host_sam} -o {output.host_bam};
+        #rm {output.host_sam};
+        samtools bam2fq -f 12 {output.host_bam} -1 {output.host_unmpd_r1} -2 {output.host_unmpd_r2};
+        #rm {output.host_bam}; 
+        grep -c "^@" {output.host_unmpd_r1} > {output.stats_R1};
+        grep -c "^@" {output.host_unmpd_r2} > {output.stats_R2};
+        """
+
+rule f_host_TLEN_readCount:
+    input:
+        h_bam_sorted=opj(OUTDIR, 'results/chm13_mapping/{sample_name}_alligned_chm13_pe_sorted.bam'),
+
+    output:
+        tmp_bam=temp(opj(OUTDIR, 'results/tmp/{sample_name}_alligned_chm13_pe_sorted_QC.bam')),
+        tmp_bam_R1=temp(opj(OUTDIR, 'results/tmp/{sample_name}_alligned_chm13_pe_sorted_QC_R1.bam')),
+        tmp_bam_R2=temp(opj(OUTDIR, 'results/tmp/{sample_name}_alligned_chm13_pe_sorted_QC_R2.bam')),
+
+        h_c_MT=opj(OUTDIR, 'results/host_TLEN_readCount/{sample_name}_MT_readCount.txt'),
+        h_s_MT_R1=opj(OUTDIR, 'results/host_TLEN_readCount/{sample_name}_R1_MT_TLEN_EndMotif.txt'),
+        h_s_MT_R1pos=opj(OUTDIR, 'results/host_TLEN_readCount/{sample_name}_R1pos_MT_TLEN_EndMotif.txt'),
+        h_s_MT_R1neg=opj(OUTDIR, 'results/host_TLEN_readCount/{sample_name}_R1neg_MT_TLEN_EndMotif.txt'),
+        h_s_MT_R2=opj(OUTDIR, 'results/host_TLEN_readCount/{sample_name}_R2_MT_TLEN_EndMotif.txt'),
+        h_s_MT_R2pos=opj(OUTDIR, 'results/host_TLEN_readCount/{sample_name}_R2pos_MT_TLEN_EndMotif.txt'),
+        h_s_MT_R2neg=opj(OUTDIR, 'results/host_TLEN_readCount/{sample_name}_R2neg_MT_TLEN_EndMotif.txt'),
+
+        h_c_nonMT=opj(OUTDIR, 'results/host_TLEN_readCount/{sample_name}_nonMT_readCount.txt'),
+        h_s_nonMT_R1=opj(OUTDIR, 'results/host_TLEN_readCount/{sample_name}_R1_nonMT_TLEN_EndMotif.txt'),
+        h_s_nonMT_R1pos=opj(OUTDIR, 'results/host_TLEN_readCount/{sample_name}_R1pos_nonMT_TLEN_EndMotif.txt'),
+        h_s_nonMT_R1neg=opj(OUTDIR, 'results/host_TLEN_readCount/{sample_name}_R1neg_nonMT_TLEN_EndMotif.txt'),
+        h_s_nonMT_R2=opj(OUTDIR, 'results/host_TLEN_readCount/{sample_name}_R2_nonMT_TLEN_EndMotif.txt'),
+        h_s_nonMT_R2pos=opj(OUTDIR, 'results/host_TLEN_readCount/{sample_name}_R2pos_nonMT_TLEN_EndMotif.txt'),
+        h_s_nonMT_R2neg=opj(OUTDIR, 'results/host_TLEN_readCount/{sample_name}_R2neg_nonMT_TLEN_EndMotif.txt'),
+
+    priority: 50
+    threads: 8
+    benchmark:
+        opj(OUTDIR,"benchmark/host_TLEN_readCount/{sample_name}.tsv"),
+    conda:
+        "envs/mapping.yaml",
+    params:
+        tmp_dir_sort=opj(OUTDIR, 'results/tmp/'),
+    resources:
+        mem_mb = 250000,
+        runtime_min = 240,
+        cpus = 8,
+        disk_mb = 250000,
+    shell:
+        """
+        samtools view -q 30 -F 256 -F 2048 -o {output.tmp_bam} {input.h_bam_sorted};
+        samtools view -c {output.tmp_bam} -L ./resources/MT.txt > {output.h_c_MT};
+        samtools view -c {output.tmp_bam} -L ./resources/nonMT.txt > {output.h_c_nonMT};
+
+        samtools view -f 64 -o {output.tmp_bam_R1} {output.tmp_bam};
+
+        samtools view -L ./resources/MT.txt {output.tmp_bam_R1} | \
+        awk '{{print $9, substr($10, 1, 3)}}' | sort --parallel={resources.cpus} -T {params.tmp_dir_sort} |  uniq -c | \
+        awk 'BEGIN {{ OFS=","; print "TLEN,EndMotif,Count" }} {{print $2,$3,$1}}' > {output.h_s_MT_R1};
+
+        samtools view -L ./resources/MT.txt {output.tmp_bam_R1} | \
+        awk '$9 > 0 {{print $9, substr($10, 1, 3)}}' | sort --parallel={resources.cpus} -T {params.tmp_dir_sort} |  uniq -c | \
+        awk 'BEGIN {{ OFS=","; print "TLEN,EndMotif,Count" }} {{print $2,$3,$1}}' > {output.h_s_MT_R1pos};
+        
+        samtools view -L ./resources/MT.txt {output.tmp_bam_R1} | 
+        awk '$9 < 0 {{print $9, substr($10, length($10) - 2 , length($10) )}}' | sort --parallel={resources.cpus} -T {params.tmp_dir_sort} |  uniq -c | \
+        awk 'BEGIN {{ OFS=","; print "TLEN,EndMotif,Count" }} {{print $2,$3,$1}}' > {output.h_s_MT_R1neg};
+
+        samtools view -L ./resources/nonMT.txt {output.tmp_bam_R1} | \
+        awk '{{print $9, substr($10, 1, 3)}}' | sort --parallel={resources.cpus} -T {params.tmp_dir_sort} |  uniq -c | \
+        awk 'BEGIN {{ OFS=","; print "TLEN,EndMotif,Count" }} {{print $2,$3,$1}}' > {output.h_s_nonMT_R1};
+
+        samtools view -L ./resources/nonMT.txt {output.tmp_bam_R1} | \
+        awk '$9 > 0 {{print $9, substr($10, 1, 3)}}' | sort --parallel={resources.cpus} -T {params.tmp_dir_sort} |  uniq -c | \
+        awk 'BEGIN {{ OFS=","; print "TLEN,EndMotif,Count" }} {{print $2,$3,$1}}' > {output.h_s_nonMT_R1pos};
+        
+        samtools view -L ./resources/nonMT.txt {output.tmp_bam_R1} | 
+        awk '$9 < 0 {{print $9, substr($10, length($10) - 2 , length($10) )}}' | sort --parallel={resources.cpus} -T {params.tmp_dir_sort} |  uniq -c | \
+        awk 'BEGIN {{ OFS=","; print "TLEN,EndMotif,Count" }} {{print $2,$3,$1}}' > {output.h_s_nonMT_R1neg};
+
+        samtools view -f 128 -o {output.tmp_bam_R2} {output.tmp_bam};
+        
+        samtools view -L ./resources/MT.txt {output.tmp_bam_R2} | \
+        awk '{{print $9, substr($10, 1, 3)}}' | sort --parallel={resources.cpus} -T {params.tmp_dir_sort} |  uniq -c | \
+        awk 'BEGIN {{ OFS=","; print "TLEN,EndMotif,Count" }} {{print $2,$3,$1}}' > {output.h_s_MT_R2};
+
+        samtools view -L ./resources/MT.txt {output.tmp_bam_R2} | \
+        awk '$9 > 0 {{print $9, substr($10, 1, 3)}}' | sort --parallel={resources.cpus} -T {params.tmp_dir_sort} |  uniq -c | \
+        awk 'BEGIN {{ OFS=","; print "TLEN,EndMotif,Count" }} {{print $2,$3,$1}}' > {output.h_s_MT_R2pos};
+        
+        samtools view -L ./resources/MT.txt {output.tmp_bam_R2} | 
+        awk '$9 < 0 {{print $9, substr($10, length($10) - 2 , length($10) )}}' | sort --parallel={resources.cpus} -T {params.tmp_dir_sort} |  uniq -c | \
+        awk 'BEGIN {{ OFS=","; print "TLEN,EndMotif,Count" }} {{print $2,$3,$1}}' > {output.h_s_MT_R2neg};
+
+        samtools view -L ./resources/nonMT.txt {output.tmp_bam_R2} | \
+        awk '{{print $9, substr($10, 1, 3)}}' | sort --parallel={resources.cpus} -T {params.tmp_dir_sort} |  uniq -c | \
+        awk 'BEGIN {{ OFS=","; print "TLEN,EndMotif,Count" }} {{print $2,$3,$1}}' > {output.h_s_nonMT_R2};
+
+        samtools view -L ./resources/nonMT.txt {output.tmp_bam_R2} | \
+        awk '$9 > 0 {{print $9, substr($10, 1, 3)}}' | sort --parallel={resources.cpus} -T {params.tmp_dir_sort} |  uniq -c | \
+        awk 'BEGIN {{ OFS=","; print "TLEN,EndMotif,Count" }} {{print $2,$3,$1}}' > {output.h_s_nonMT_R2pos};
+        
+        samtools view -L ./resources/nonMT.txt {output.tmp_bam_R2} | 
+        awk '$9 < 0 {{print $9, substr($10, length($10) - 2 , length($10) )}}' | sort --parallel={resources.cpus} -T {params.tmp_dir_sort} |  uniq -c | \
+        awk 'BEGIN {{ OFS=","; print "TLEN,EndMotif,Count" }} {{print $2,$3,$1}}' > {output.h_s_nonMT_R2neg};
+        """
+
+onsuccess:
+    print("Workflow finished, no error")
+    shell("mail -s 'Job finished! Well done!' 'a.e.wesdorp@umcutrecht.nl' < {log}")
+onerror:
+    print("An error occurred")
+    shell("mail -s 'an error occurred' 'a.e.wesdorp@umcutrecht.nl' < {log}")
