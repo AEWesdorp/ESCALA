@@ -1,0 +1,5 @@
+figures/scripts/.*
+figures/scripts/.OLD
+scripts/.*
+output/*
+output_figures/*
